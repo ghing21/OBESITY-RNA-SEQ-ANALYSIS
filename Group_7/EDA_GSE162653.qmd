@@ -1,0 +1,88 @@
+---
+title: "Exploratory Data Analysis"
+author: "Group 7"
+format: html
+editor: visual
+---
+
+## libraries
+
+```{r}
+library("tidyverse")
+library("patchwork")
+library("here")
+
+source("functions/summarize_expression.R")
+source("functions/plot_expression_density.R")
+source("functions/plot_expression_boxplot.R")
+source("functions/plot_sample_correlation.R")
+```
+
+```{r}
+path <- "data/GSE162653"
+GSE_norm0 <- file.path(path, "GSE162653_Week_0_Normal_weight.txt.gz")
+GSE_ob0 <- file.path(path, "GSE162653_Week_0_Obese.txt.gz")
+
+GSE_norm12 <- file.path(path, "GSE162653_Week_12_Normal_weight.txt.gz")
+GSE_ob12 <- file.path(path, "GSE162653_Week_12_Obese.txt.gz")
+
+
+norm0 <- read_tsv(GSE_norm0) |> rename(gene_id = 1)
+ob0 <- read_tsv(GSE_ob0) |> rename(gene_id = 1)
+
+norm12 <- read_tsv(GSE_norm12) |> rename(gene_id = 1)
+ob12 <- read_tsv(GSE_ob12) |> rename(gene_id = 1)
+```
+
+
+```{r}
+norm0 |> head()
+ob0 |> head()
+
+norm12 |> head()
+ob12 |> head()
+```
+
+
+```{r}
+dplot_n0 <- plot_expression_density(norm0)
+dplot_b0 <- plot_expression_density(ob0)
+dplot_n12 <- plot_expression_density(norm12)
+dplot_b12 <- plot_expression_density(ob12)
+
+(dplot_n0 + dplot_n12) / (dplot_b0 + dplot_b12)
+
+```
+
+```{r}
+cplot_n0 <- plot_sample_correlation(norm0)
+cplot_n12 <- plot_sample_correlation(norm12)
+
+cplot_b0 <- ob0 |> # duplicated values, either delete duplicated or avg expresion
+  distinct(gene_id, .keep_all = TRUE) |>   # remove duplicated gene IDs
+  filter(
+    !is.na(gene_id),                       # remove NA IDs
+    gene_id != ""                          # remove empty IDs
+  ) |>
+  plot_sample_correlation() 
+
+cplot_b12 <- ob12 |> # same issue over here
+  distinct(gene_id, .keep_all = TRUE) |>   # remove duplicated gene IDs
+  filter(
+    !is.na(gene_id),                       # remove NA IDs
+    gene_id != ""                          # remove empty IDs
+  ) |>
+  plot_sample_correlation() 
+
+(cplot_n0 + cplot_n12) / (cplot_b0 + cplot_b12)
+```
+
+
+```{r}
+bxplot_n0 <- plot_expression_boxplot(norm0)
+bxplot_b0 <- plot_expression_boxplot(ob0)
+bxplot_n12 <- plot_expression_boxplot(norm12)
+bxplot_b12 <- plot_expression_boxplot(ob12)
+
+(bxplot_n0 + bxplot_n12) / (bxplot_b0 + bxplot_b12)
+```

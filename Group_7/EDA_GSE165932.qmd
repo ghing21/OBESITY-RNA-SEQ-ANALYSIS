@@ -1,0 +1,90 @@
+---
+title: "Exploratory Data Analysis II"
+author: "Group 7"
+format: html
+editor: visual
+---
+
+```{r}
+library("tidyverse")
+library("DESeq2")
+library("fgsea")
+library("msigdbr")
+
+load(file='/home/projects/22140/exam_data/exam_functions.Rdata')
+# source("functions/summarize_expression.R")
+# source("functions/plot_expression_density.R")
+# source("functions/plot_expression_boxplot.R")
+# source("functions/plot_sample_correlation.R")
+```
+
+```{r}
+path <- "data/GSE165932"
+raw_dir <- "data/GSE165932/GSE165932_RAW"
+
+GSE_cmatrix <- file.path(path, "GSE165932_hVATSeq_count_matrix.csv.gz")
+GSE_raw <- file.path(path, "GSE165932_RAW.tar")
+# untar(GSE_raw, exdir = raw_dir) # Only run the first time. 
+
+cmatrix <- read_csv(GSE_cmatrix) 
+
+# We'll get back to this if we have time
+# files <- list.files(raw_dir, pattern = "\\.txt\\.gz$", full.names = TRUE)
+# # read_featurecounts <- function(path) {
+# #   lines <- read_lines(path)
+# # 
+# #   # quedarnos solo con:
+# #   # - líneas que comienzan con #
+# #   # - o la cabecera Geneid...
+# #   # - o líneas que realmente tienen tabs
+# #   lines_clean <- lines[
+# #     str_starts(lines, "#") |
+# #     str_starts(lines, "Geneid") |
+# #     str_detect(lines, "\t")
+# #   ]
+# # 
+# #   # guardamos temporalmente el archivo limpio
+# #   tf <- tempfile(fileext = ".txt")
+# #   write_lines(lines_clean, tf)
+# # 
+# #   # leer correctamente
+# #   read_tsv(tf, comment = "#")
+# # }
+# 
+# raw_list <- lapply(files, read_featurecounts)
+# raw_all <- dplyr::bind_rows(raw_list)
+```
+
+
+```{r}
+filename <- "GSM5058394_YM-01_S2_L002_Aligned.sortedByCoord.out.bam_featureCounts.txt.gz"
+```
+
+
+```{r}
+raw_list <- map(files, ~ read_tsv(.x, comment = "#"))
+raw_all <- bind_rows(raw_list)
+
+```
+
+```{r}
+cmatrix |> head()
+raw_all |> head()
+```
+<<<<<<< HEAD
+
+
+```{r}
+iso_matrix <- loadIsoformCountMatrix("GSE165932") |> extractGeneCountMatrixFromIsoCounts()
+```
+
+```{r}
+iso_matrix |> DESeqDataSetFromMatrix(countData = lichGeneCount,
+                                     colData = lihcMeta,
+                                     design = ~ condition)
+```
+
+
+
+=======
+>>>>>>> 2a8fd7a87987ebcad0effbd70f42adef11b02e25

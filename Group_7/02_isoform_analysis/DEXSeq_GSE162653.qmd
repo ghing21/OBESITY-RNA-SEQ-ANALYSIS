@@ -1,0 +1,723 @@
+---
+title: "DEXSeq_GSE162653"
+format: html
+editor: visual
+---
+
+## Load environment and data
+
+```{r}
+library(DEXSeq)
+library(fgsea)
+library(msigdbr)
+library(tidyverse)
+library(readxl)
+library(fgsea)
+library(ggrepel)
+library(grid)
+library(VennDiagram)
+load(file='/home/projects/22140/exam_data/exam_functions.Rdata')
+```
+
+## Set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+## Load count matrices at gene and isoform resolution and genes-isoforms mapping
+
+```{r}
+# Load isoforms count matrix
+iso_count_matrix_2 <- loadIsoformCountMatrix("GSE162653")
+
+# Load genes count matrix
+gene_count_matrix_2 <- extractGeneCountMatrixFromIsoCounts(iso_count_matrix_2)
+
+# Load genes-isoforms mapping
+isoInfo <- read_rds(
+paste0(
+'/home/projects/22140/exam_data/',
+'Homo_sapiens.GRCh38.107.chr_patch_hapl_scaff_tx_info.Rds'
+)
+)
+```
+
+## Load metadata
+
+```{r}
+gene_meta_2 <- read_excel("../data/GSE162653/metadata_GSE162653.xlsx")
+```
+
+Remove week 12 samples, because we only want to study diabetes, not the effect of the treatment
+
+```{r}
+week0_samples <- gene_meta_2 |> 
+  pull(sample)
+
+gene_count_matrix_2 <- gene_count_matrix_2[, week0_samples]
+iso_count_matrix_2  <- iso_count_matrix_2[, week0_samples]
+
+dim(iso_count_matrix_2)   
+dim(gene_count_matrix_2) 
+```
+
+Filter the isoform matrix to remove all the lowly expressed isoforms.
+
+```{r}
+# Remove isoforms with total count = 0 across all samples
+iso_keep <- rowSums(iso_count_matrix_2) > 0
+iso_count_matrix_2 <- iso_count_matrix_2[iso_keep, ]
+
+# Remove isoforms expressed in very few samples
+iso_keep2 <- rowSums(iso_count_matrix_2 >= 10) >= 9
+iso_count_matrix_2 <- iso_count_matrix_2[iso_keep2, ]
+
+filtered_isoforms <- nrow(iso_count_matrix_2)
+filtered_isoforms
+```
+
+```{r}
+# Filter isoInfo to match the filtered matrix
+isoInfo_subset_2 <- isoInfo |>
+  filter(transcript_id %in% rownames(iso_count_matrix_2))
+
+# Reorder
+isoInfo_subset_2 <- isoInfo_subset_2[
+  match(rownames(iso_count_matrix_2), isoInfo_subset_2$transcript_id),
+]
+
+nrow(iso_count_matrix_2)
+nrow(isoInfo_subset_2)
+all(rownames(iso_count_matrix_2) == isoInfo_subset_2$transcript_id)
+```
+
+Check that the order of the samples in the count matrix and isoform matrix is the same as well as in the metadata
+
+```{r}
+#check that the order in the count matrix and isoform matrix is the same
+all(colnames(gene_count_matrix_2) == colnames(iso_count_matrix_2))
+
+# Check that the order in metadata is the same
+all(gene_meta_2$sample == colnames(gene_count_matrix_2))
+all(gene_meta_2$sample == colnames(iso_count_matrix_2))
+
+# Check that the num of columns is identical
+ncol(gene_count_matrix_2)
+ncol(iso_count_matrix_2)
+```
+
+### Differential Isoform Expression
+
+```{r}
+# Create the DEXSeqDataSet 
+dxd_2 <- DEXSeqDataSet(
+  countData = iso_count_matrix_2,
+  sampleData = gene_meta_2,
+  design = ~ sample + exon + condition:exon,
+  featureID = isoInfo_subset_2$transcript_id,
+  groupID   = isoInfo_subset_2$gene_id
+)
+dxd_2
+```
+
+```{r}
+# Run DEXSeq (obesity effect, insulin as cofactor)
+dxd_results_2 <- DEXSeq(
+  dxd_2,
+  fullModel    = ~ sample + exon + condition:exon,
+  reducedModel = ~ sample + exon,
+  BPPARAM      = BiocParallel::MulticoreParam(4)  
+)
+```
+
+```{r}
+# How many isoforms were actually tested
+sum(!is.na(dxd_results_2$stat))
+```
+
+```{r}
+saveRDS(dxd_results_2, file = "../results/dexseq_results_GSE162653.rds")
+```
+
+### Collapse isoform-level results into gene-level results
+
+```{r}
+# Load DEX results
+dxd_results_2 <- readRDS("../results/dexseq_results_GSE162653.rds")
+```
+
+```{r}
+dexseqResultGene_2 <- 
+  # Turn the DEXSeqResults object into a plain tibble
+  dxd_results_2  |> 
+  as.data.frame()  |> 
+  as_tibble()  |> 
+  # Remove rows with NULL values in stat column
+  filter(!is.na(stat))  |> 
+  # Select and rename columns
+  dplyr::select(
+    gene_id    = groupID,
+    isoform_id = featureID,
+    stat,
+    log2FC = log2fold_Obese_Normal,
+    pvalue,
+    padj
+  )  |> 
+  # Group by gene to include all the corresponding isoforms
+  group_by(gene_id)  |> 
+  # For each gene, keep only the single isoform with the smallest p-value
+  slice_min(order_by = pvalue, n = 1, with_ties = FALSE) |> 
+  ungroup() |> 
+  # Recalculate FDR across genes using those per-gene minimal p-values.
+  mutate(
+    padj_gene = p.adjust(pvalue, method = "fdr")
+  )
+
+# Number of genes showing differential isoform usage
+sum(dexseqResultGene_2$padj_gene < 0.05, na.rm = TRUE)
+```
+
+### COMPARE DEXSeq vs DESeq2 results
+
+```{r}
+# Load DESeq2 results
+de_results_2 <- readRDS("../results/GSE162653_results.rds")
+fg_de_BP <- readRDS("../results/fgsea_DESeq2_BP_GSE162653.rds")
+```
+
+```{r}
+# Clean ENSEMBL IDs if they contain version suffixes
+de_results_2 <- de_results_2  |> 
+  mutate(gene_id_clean = sub("\\.\\d+$", "", gene_id))
+
+dexseqResultGene_2 <- dexseqResultGene_2 |> 
+  mutate(gene_id_clean = sub("\\.\\d+$", "", gene_id))
+```
+
+```{r}
+#Add significance flags - Define significant genes
+alpha <- 0.05
+
+de_results_2 <- de_results_2  |> 
+  mutate(DE_sig = padj < alpha)
+
+dexseqResultGene_2 <- dexseqResultGene_2  |> 
+  mutate(DEX_sig = padj_gene < alpha)
+```
+
+```{r}
+# Find genes that are present in both analysis
+shared_genes <- intersect(de_results_2$gene_id_clean, dexseqResultGene_2$gene_id_clean)
+
+# Merge DE + DEX results
+# Create one table that contains both results for the same genes
+merged <- inner_join(
+  de_results_2   |>  
+    filter(gene_id_clean %in% shared_genes),
+  dexseqResultGene_2 |> 
+    filter(gene_id_clean %in% shared_genes),
+  by = "gene_id_clean"
+)
+
+# Contingency table (DEXSeq vs DESeq2 significance)
+cont_tab_2   <- table(
+  DEX = merged$DEX_sig,
+  DE  = merged$DE_sig
+)
+cont_tab_2
+```
+
+```{r}
+# Fisher exact test
+fisher_res_2 <- fisher.test(cont_tab_2, alternative = "greater")
+fisher_res_2
+```
+
+p-value \< 2.2e-16 odds ratio = 1.516
+
+The overlap between the two analyses was highly significant (Fisher’s exact test p \< 2.2e−16), with an odds ratio of 1.52, indicating that DE and DEXco-occur more often than expected by random chance.
+
+### Compare to Differential Expression at Gene-set Level
+
+```{r}
+# Biological Process
+GO_BP <- msigdbr(
+  species = "Homo sapiens", 
+  category = "C5", 
+  subcategory = "BP")  |> 
+  dplyr::select(gs_name, ensembl_gene)
+
+# Cellular Component
+GO_CC <- msigdbr(
+  species = "Homo sapiens", 
+  category = "C5", 
+  subcategory = "CC")  |> 
+  dplyr::select(gs_name, ensembl_gene)
+
+# Molecular Function
+GO_MF <- msigdbr(
+  species = "Homo sapiens", 
+  category = "C5", 
+  subcategory = "MF")  |> 
+  dplyr::select(gs_name, ensembl_gene)
+
+BP_list <- split(GO_BP$ensembl_gene, GO_BP$gs_name)
+CC_list <- split(GO_CC$ensembl_gene, GO_CC$gs_name)
+MF_list <- split(GO_MF$ensembl_gene, GO_MF$gs_name)
+
+```
+
+```{r}
+# Create the ranked list of isoform-level statistics
+dex_vals <- dexseqResultGene_2$stat
+dex_names <- dexseqResultGene_2$gene_id_clean
+
+stats_dex <- setNames(dex_vals, dex_names)
+
+stats_dex <- stats_dex[!is.na(stats_dex)]
+stats_dex <- sort(stats_dex, decreasing = TRUE) # sort in decreasing order (required for FGSEA)
+```
+
+Run FGSEA (FSC) for DEX
+
+```{r}
+#Biological Process
+fg_dex_BP <- fgseaMultilevel(
+  pathways = BP_list,
+  stats = stats_dex,
+  minSize = 15,
+  maxSize = 500,
+  scoreType = "std"
+)
+
+sig_dx_BP <- fg_dex_BP  |>  filter(padj < 0.05)
+
+# Cellular Component
+fg_dex_CC <- fgseaMultilevel(
+  pathways = CC_list,
+  stats = stats_dex,
+  minSize = 15,
+  maxSize = 500,
+  scoreType = "std"
+)
+
+sig_dx_CC <- fg_dex_CC %>% filter(padj < 0.05)
+
+# Molecular Function
+fg_dex_MF <- fgseaMultilevel(
+  pathways = MF_list,
+  stats = stats_dex,
+  minSize = 15,
+  maxSize = 500,
+  scoreType = "std"
+)
+
+sig_dx_MF <- fg_dex_MF  |>  filter(padj < 0.05)
+```
+
+```{r}
+n_sig_dx_BP <- nrow(sig_dx_BP)
+n_sig_dx_BP
+
+n_sig_dx_CC <- nrow(sig_dx_CC)
+n_sig_dx_CC
+
+n_sig_dx_MF <- nrow(sig_dx_MF)
+n_sig_dx_MF
+```
+
+Top 10 enriched BP, CC, MF
+
+```{r}
+sig_dx_BP <- sig_dx_BP |>
+    arrange(padj)
+
+top10_dx_BP <- sig_dx_BP |> 
+  slice_head(n = 10)
+top10_dx_BP
+
+sig_dx_CC <- sig_dx_CC |>
+    arrange(padj)
+
+top10_dx_CC <- sig_dx_CC |> 
+  slice_head(n = 10)
+top10_dx_CC
+
+sig_dx_MF <- sig_dx_MF |>
+    arrange(padj)
+
+top10_dx_MF <- sig_dx_MF |> 
+  slice_head(n = 10)
+top10_dx_MF
+
+```
+
+```{r}
+sig_dx_BP <- sig_dx_BP %>% 
+  mutate(direction = ifelse(NES > 0, "Up", "Down"))
+
+table(sig_dx_BP$direction)
+
+```
+
+```{r}
+top10_dx_BP_clean <- top10_dx_BP %>%
+  select_if(~ !is.list(.))
+
+write.csv(top10_dx_BP_clean,
+          "../results/top10_dx_BP.csv",
+          row.names = FALSE)
+
+```
+
+Together, these pathways highlight that obesity induces widespread isoform-level alterations in adhesion, cytoskeletal structure, and migratory signaling processes effects that are not detectable at the gene-expression level alone.
+
+DEXSeq revealed **extensive differential isoform usage** in pathways related to extracellular matrix remodeling, cytoskeletal organization, cell adhesion, and tissue stress responses. These pathways including ECM structural functions, integrin and cadherin binding, actin remodeling, and cell–matrix adhesion are **core biological processes known to drive adipocyte hypertrophy, fibrosis, and inflammation in obesity**.
+
+```{r}
+DE_BP <- fg_de_BP
+DE_BP_sig <- fg_de_BP  |>  filter(padj < 0.05)
+
+# Compare with DE
+n_sig_de <- nrow(DE_BP_sig)
+n_sig_dx <- nrow(sig_dx_BP)
+n_sig_de
+n_sig_dx
+
+# shared pathways (by name)
+shared <- intersect(DE_BP_sig$pathway, sig_dx_BP$pathway)
+n_shared <- length(shared)
+n_shared
+```
+
+PLOTTING
+
+```{r}
+# Create a merged table for plotting
+# contains only the shared pathways.
+DE_BP_df <- DE_BP |> 
+  transmute(pathway, NES_DE = NES, padj_DE = padj)
+
+DEX_BP_df <- fg_dex_BP |> 
+  transmute(pathway, NES_DEX = NES, padj_DEX = padj)
+
+comparison_BP <- inner_join(DE_BP_df, DEX_BP_df, by = "pathway")
+
+# Create significance label for each pathway
+comparison_BP <- comparison_BP  |> 
+  mutate(
+    sig_cat = case_when(
+      padj_DE < 0.05 & padj_DEX < 0.05 ~ "Both",
+      padj_DE < 0.05 & padj_DEX >= 0.05 ~ "DE only",
+      padj_DE >= 0.05 & padj_DEX < 0.05 ~ "DEX only",
+      TRUE ~ "None"
+    )
+  )  |> 
+  mutate(sig_cat = factor(sig_cat, levels = c("Both","DE only","DEX only","None")))
+
+p1 <- ggplot(comparison_BP, aes(x = NES_DE, y = NES_DEX, color = sig_cat)) +
+  geom_point(size = 3, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE) +
+  labs(
+    x = "NES (DESeq2 BP)",
+    y = "NES (DEXSeq BP)",
+    color = "Significance",
+    title = "Comparison of DE vs DEX — Biological Process pathways"
+  ) +
+  theme_minimal()
+p1
+
+ggsave("../figures/GSE162653_comp_DEvsDEX_BP.png", plot = p1)
+```
+
+This plot visually compares **gene-set enrichment scores** between:
+
+-   **DESeq2** (gene-level differential expression)
+
+-   **DEXSeq** (gene-level differential isoform usage)
+
+    for the **same Biological Process (BP) pathways**.
+
+Each point = **one GO BP pathway**.
+
+Volcano plot for gene-level (DEXSeq)
+
+```{r}
+volcano_diu <- dexseqResultGene_2  |> 
+  mutate(
+    sig = padj_gene < 0.05,
+    direction = case_when(
+      padj_gene < 0.05 & log2FC > 1  ~ "Up in Obese",
+      padj_gene < 0.05 & log2FC < -1 ~ "Down in Obese",
+      TRUE ~ "Not significant"
+    )
+  )
+
+p2 <- ggplot(volcano_diu, aes(x = log2FC, y = -log10(padj_gene), color = direction)) +
+  geom_point(alpha = 0.6, size = 1.8) +
+  scale_color_manual(values = c(
+    "Up in Obese" = "firebrick",
+    "Down in Obese" = "royalblue",
+    "Not significant" = "grey70"
+  )) +
+  geom_vline(xintercept = c(-1, 1), linetype = "dashed") +
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed") +
+  labs(
+    title = "Volcano Plot — Differential Isoform Usage (gene-level DEXSeq)",
+    x = "log2 Fold Change (Obese vs Normal)",
+    y = "-log10(FDR)",
+    color = "Direction"
+  ) +
+  theme_minimal(base_size = 13)
+p2
+
+ggsave("../figures/volc_dex.png", plot = p2)
+```
+
+```{r}
+library(cowplot)
+library(dplyr)
+library(ggplot2)
+
+# 1) Ordered top DIU-only genes (your ranking)
+dex_only_genes_ordered <- merged %>%
+  filter(DEX_sig & !DE_sig) %>%
+  arrange(padj_gene) %>%
+  slice_head(n = 10) %>%
+  pull(gene_id.y)
+
+# 2) We'll store the plots AND the actual genes that were plotted
+combined_list <- list()
+plotted_genes <- tibble(
+  rank = integer(),
+  gene_id = character(),
+  gene_symbol = character()
+)
+
+# Create ENSG -> gene symbol lookup for GSE165932
+# Run this BEFORE compute_delta_usage() and the for-loop
+
+gene_lookup <- isoInfo_subset_2 %>%
+  dplyr::distinct(gene_id, gene_name)
+
+compute_delta_usage <- function(gene_id) {
+  
+  isoforms <- isoInfo_subset_2 %>%
+    dplyr::filter(gene_id == !!gene_id) %>%
+    dplyr::pull(transcript_id)
+  
+  if (length(isoforms) < 2) {
+    message("Gene ", gene_id, " has <2 isoforms. Skipping.")
+    return(NULL)
+  }
+  
+  mat <- iso_count_matrix_2[isoforms, , drop = FALSE]
+  if (nrow(mat) < 2) {
+    message("Isoform rows missing for gene ", gene_id)
+    return(NULL)
+  }
+  
+  props <- sweep(mat, 2, colSums(mat), "/")
+  
+  props_df <- as.data.frame(t(props))
+  props_df$sample <- rownames(props_df)
+  
+  props_df <- merge(
+    props_df,
+    gene_meta_2[, c("sample", "condition")],
+    by = "sample",
+    sort = FALSE
+  )
+  
+  numeric_cols <- names(props_df) %in% isoforms
+  
+  obese_props  <- props_df[props_df$condition == "Obese",  numeric_cols, drop = FALSE]
+  normal_props <- props_df[props_df$condition == "Normal", numeric_cols, drop = FALSE]
+  
+  obese_means  <- colMeans(obese_props,  na.rm = TRUE)
+  normal_means <- colMeans(normal_props, na.rm = TRUE)
+  
+  gene_symbol <- gene_lookup %>%
+    dplyr::filter(gene_id == !!gene_id) %>%
+    dplyr::pull(gene_name)
+  
+  tibble::tibble(
+    gene_id = gene_id,
+    gene_symbol = ifelse(length(gene_symbol) == 0, gene_id, gene_symbol),
+    isoform = isoforms,
+    delta_usage = obese_means - normal_means
+  )
+}
+
+
+i <- 1
+for (g in dex_only_genes_ordered) {
+  
+  delta_df <- compute_delta_usage(g)
+  if (is.null(delta_df)) {
+    message("Skipping gene (not enough isoforms / counts): ", g)
+    next
+  }
+  
+  # get symbol from delta_df (we added it in compute_delta_usage)
+  symbol <- delta_df$gene_symbol[1]
+  
+  p <- ggplot(delta_df, aes(
+    x = reorder(isoform, delta_usage),
+    y = delta_usage,
+    fill = delta_usage > 0
+  )) +
+    geom_col() +
+    coord_flip() +
+    scale_fill_manual(
+      values = c("TRUE" = "firebrick", "FALSE" = "royalblue"),
+      labels = c("TRUE" = "Higher in Obese", "FALSE" = "Higher in Normal")
+    ) +
+    labs(
+      title = paste0(i, ". ", symbol, " (", g, ")"),
+      x = "Isoform",
+      y = "Δ proportion (Obese − Normal)"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      legend.position = "none",
+      plot.title = element_text(hjust = 0, face = "bold", size = 12)
+    )
+  
+  combined_list[[i]] <- p
+  
+  plotted_genes <- add_row(
+    plotted_genes,
+    rank = i,
+    gene_id = g,
+    gene_symbol = symbol
+  )
+  
+  i <- i + 1
+}
+
+# 3) Make combined plot from the plots that actually exist, in this order
+combined_plot <- plot_grid(
+  plotlist = combined_list,
+  ncol = 2,
+  align = "hv"
+)
+
+ggsave(
+  "../figures/combined_delta_usage_summary_ORDERED_GSE162653.png",
+  combined_plot,
+  width = 14, height = 11
+)
+
+# 4) Print the genes in the exact same order as the panels
+plotted_genes
+
+```
+
+For the top DIU-only genes (significant in DEXSeq but not in DESeq2), we visualized changes in isoform usage as Δ-proportions (Obese − Normal) for each transcript. Each panel corresponds to one gene (ordered by increasing DIU significance), and bars represent individual isoforms. Positive values indicate isoforms that are used more frequently in Obese samples, while negative values indicate isoforms preferentially used in Normal samples. This figure summarizes isoform switching events that occur independently of total gene expression changes
+
+```{r}
+# Significant pathways for each method
+de_paths  <- DE_BP_sig$pathway      # DESeq2 significant BP pathways
+dex_paths <- sig_dx_BP$pathway      # DEXSeq significant BP pathways
+length(de_paths)      # how many DE-only pathways
+length(dex_paths)     # how many DEX-only pathways
+length(intersect(de_paths, dex_paths))  # how many shared
+
+grid.newpage()
+
+venn.obj <- venn.diagram(
+  x = list(
+    "DESeq2"  = de_paths,
+    "DEXSeq" = dex_paths
+  ),
+  filename = NULL,                      # IMPORTANT: print instead of save
+  fill = c("#69b3ff", "#ff7b7b"),       # nice colors
+  alpha = 0.6,
+  cex = 1.8,                             # numbers size
+  fontface = "bold",
+  cat.cex = 1.5,                         # set names
+  cat.fontface = "bold",
+  cat.pos = c(-35, 20),                  # nicer positioning
+  cat.dist = 0.06,
+  main = "Overlap of Enriched BP Pathways\nDESeq2 vs DEXSeq",
+  main.cex = 1.6
+)
+
+grid.draw(venn.obj)
+
+# save it manually
+png("../figures/venn_DE_vs_DEX_BP.png", width = 2000, height = 2000, res = 300)
+grid.draw(venn.obj)
+dev.off()
+```
+
+volcano plot for BP
+
+```{r}
+
+# Use the DEXSeq FGSEA BP results
+fg_df <- sig_dx_BP
+
+library(dplyr)
+library(ggplot2)
+library(ggrepel)
+library(stringr)
+
+# Prepare data
+fg_volcano <- fg_df %>% 
+  mutate(
+    mlog10padj = -log10(padj),
+    sig = padj < 0.05,
+    direction = ifelse(NES > 0, "Up", "Down"),
+    
+    color_group = case_when(
+      sig & NES > 0 ~ "Up_sig",
+      sig & NES < 0 ~ "Down_sig",
+      TRUE ~ "NS"
+    )
+  )
+
+# Label top 10 most significant pathways
+to_label <- fg_volcano %>% 
+  arrange(padj) %>% 
+  slice_head(n = 10)
+
+# Volcano plot
+volcano_p <- ggplot(fg_volcano, aes(x = NES, y = mlog10padj)) +
+  
+  geom_point(aes(color = color_group), size = 2.5, alpha = 0.85) +
+  
+  geom_hline(yintercept = -log10(0.05), linetype = 2) +
+  
+  geom_text_repel(
+    data = to_label,
+    aes(label = str_trunc(pathway, 45)),
+    size = 2.7, fontface = "bold"
+  ) +
+  
+  scale_color_manual(
+    values = c(
+      "Up_sig" = "#1f78b4",    # blue
+      "Down_sig" = "#e31a1c",  # red
+      "NS" = "grey70"
+    ),
+    labels = c(
+      "Up_sig" = "Up-regulated (sig)",
+      "Down_sig" = "Down-regulated (sig)",
+      "NS" = "Not significant"
+    ),
+    name = "Status"
+  ) +
+  
+  labs(
+    x = "Normalized Enrichment Score (NES)",
+    y = expression(-log[10](padj)),
+    title = "Volcano Plot: Enriched Biological Processes (DEXSeq)"
+  ) +
+  
+  theme_minimal(base_size = 13)
+
+volcano_p
+```

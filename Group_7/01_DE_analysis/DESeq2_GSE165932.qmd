@@ -1,0 +1,256 @@
+---
+title: "DESeq2_GSE165932"
+format: html
+---
+
+## Load libraries
+
+```{r}
+library(tidyverse)
+library(DESeq2)
+library(fgsea)
+library(msigdbr)
+library(readxl)
+library(ggrepel)
+library(readr)
+```
+
+## Set seed for reproducibility
+
+```{r}
+set.seed(123)
+```
+
+## Load count matrices at gene and isoform resolution
+
+```{r}
+load(file='/home/projects/22140/exam_data/exam_functions.Rdata')
+iso_count_matrix <- loadIsoformCountMatrix("GSE165932")
+gene_count_matrix <- extractGeneCountMatrixFromIsoCounts(iso_count_matrix)
+```
+
+## Load metadata
+
+```{r}
+gene_meta <- read_excel("/net/pupil1/home/people/s243357/projects/introduction_to_systems_biology/sysbio_project/data/GSE165932/metadata_GSE165932.xlsx")
+```
+
+Remove the samples for which we don't have metadata
+
+```{r}
+week0_samples <- gene_meta |> 
+  pull(sample)
+
+gene_count_matrix <- gene_count_matrix |> 
+  select(week0_samples)
+```
+
+Check that the order of the samples in the count matrix is the same as in the metadata
+
+```{r}
+all(gene_meta$sample == colnames(gene_count_matrix))
+```
+
+## Create the DESeq2 object
+
+```{r}
+dds <- DESeqDataSetFromMatrix(countData = gene_count_matrix,
+colData = gene_meta,
+design = ~ insulin + condition)
+```
+
+## PCA for EDA
+
+```{r}
+PCA <- plotPCA(rlog(dds), intgroup=c("condition", "insulin"))
+PCA
+```
+
+```{r}
+ggsave("./figures/GSE165932_PCA.png", plot = PCA)
+```
+
+The same as in the other dataset, no clear separation between obese and control patients. Heterogeneous groups or maybe there is not a big differential expression.
+
+## Testing for differential expression
+
+```{r}
+dds <- DESeq(dds)
+```
+
+```{r}
+res <- results(dds,
+contrast = c("condition","Obese","Normal"))
+
+res_df <- as_tibble(res, rownames = "gene_id")
+```
+
+## Counting the number of significant genes
+
+```{r}
+res_df <- as_tibble(res, rownames = "gene_id")
+
+res_df |> 
+  drop_na() |> 
+  filter(padj < 0.05) |> 
+  nrow()
+```
+
+## Functional Class Scoring
+
+Create a list of BP and genes associated with them
+
+```{r}
+BP_df = msigdbr(species = "human", category = "C5", subcategory = "BP")
+BP_list = split(BP_df$ensembl_gene, BP_df$gs_name)
+```
+
+Create a ranked list of gene statistics
+
+```{r}
+myStats <- res_df |> 
+  pull(stat)
+
+names(myStats) <- res_df |> 
+  pull(gene_id)
+
+myStats <- myStats[!is.na(myStats)]
+myStats <- sort(myStats, decreasing = TRUE)
+```
+
+Run the analysis
+
+```{r}
+fg <- fgseaMultilevel(pathways = BP_list, stats = myStats,
+minSize = 15, maxSize = 500, scoreType = "std")
+```
+
+Extract only the significant pawthways
+
+```{r}
+fg_sig <- fg |> 
+  arrange(padj) |> 
+  filter(padj < 0.05)
+
+nrow(fg_sig)
+```
+
+```{r}
+fg_sig[1:10]
+```
+
+Many of them related with metabolism, some with immune activation
+
+## Plot enrichment
+
+```{r}
+chosen_pathway <- fg_sig$pathway[1]
+fsc_p1 <- plotEnrichment(BP_list[[chosen_pathway]], myStats) +
+ggplot2::labs(title = paste0("Enrichment: ", chosen_pathway))
+fsc_p1
+```
+
+```{r}
+chosen_pathway <- fg_sig$pathway[2]
+fsc_p2 <- plotEnrichment(BP_list[[chosen_pathway]], myStats) +
+ggplot2::labs(title = paste0("Enrichment: ", chosen_pathway))
+fsc_p2
+```
+
+```{r}
+chosen_pathway <- fg_sig$pathway[8]
+fsc_p3 <- plotEnrichment(BP_list[[chosen_pathway]], myStats) +
+ggplot2::labs(title = paste0("Enrichment: ", chosen_pathway))
+fsc_p3
+```
+
+```{r}
+chosen_pathway <- fg_sig$pathway[9]
+fsc_p4 <- plotEnrichment(BP_list[[chosen_pathway]], myStats) +
+ggplot2::labs(title = paste0("Enrichment: ", chosen_pathway))
+fsc_p4
+```
+
+```{r}
+ggsave("./figures/GSE165932_fsc_p1.png", plot = fsc_p1)
+
+ggsave("./figures/GSE165932_fsc_p2.png", plot = fsc_p2)
+
+ggsave("./figures/GSE165932_fsc_p3.png", plot = fsc_p3)
+
+ggsave("./figures/GSE165932_fsc_p4.png", plot = fsc_p4)
+```
+
+## Volcano Plot
+
+```{r}
+fg_volcano <- fg |> 
+  mutate(
+    sig = padj < 0.05,
+    mlog10padj = -log10(padj),
+    direction = ifelse(NES > 0, "Up", "Down"),
+
+    color_group = case_when(
+      sig & direction == "Up" ~ "Up_sig",
+      sig & direction == "Down" ~ "Down_sig",
+      TRUE ~ "NS"   # no significativas
+    )
+  )
+
+to_label <- fg_volcano |> 
+  arrange(padj) |> 
+  slice_head(n = 10)
+
+volcano_p <- ggplot(fg_volcano, aes(x = NES, y = mlog10padj)) +
+  
+
+  geom_point(aes(color = color_group), size = 2.6, alpha = 0.9) +
+
+  geom_hline(yintercept = -log10(0.05), linetype = 2) +
+  
+
+  geom_text_repel(
+    data = to_label,
+    aes(label = str_trunc(pathway, 50),
+        color = color_group),
+    max.overlaps = 30,
+    size = 2,
+    fontface = "bold"
+  ) +
+  
+
+  scale_color_manual(
+    values = c(
+      "Up_sig" = "#1f78b4",   
+      "Down_sig" = "#e31a1c", 
+      "NS" = "grey70"        
+    ),
+    labels = c(
+      "Up_sig" = "Up (sig)",
+      "Down_sig" = "Down (sig)",
+      "NS" = "Not significant"
+    ),
+    name = "Pathway status"
+  ) +
+  
+  labs(
+    x = "NES",
+    y = expression(-log[10](padj)),
+    title = "Volcano plot of gene-set enrichment"
+  ) +
+  
+  theme_minimal(base_size = 12)
+
+volcano_p
+```
+
+```{r}
+ggsave("./figures/GSE165932_volcano.png", plot = volcano_p)
+```
+
+## Save results
+
+```{r}
+saveRDS(res_df, "./results/GSE165932_results.rds")
+write_csv(res_df, "./results/GSE165932_results.csv")
+```

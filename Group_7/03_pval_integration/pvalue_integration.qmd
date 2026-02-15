@@ -1,0 +1,464 @@
+---
+title: "pvalue_integration"
+format: html
+---
+
+# Load packages
+
+```{r}
+library(tidyverse)
+library(fgsea)
+library(msigdbr)
+load(file='/home/projects/22140/exercise7_data.Rdata')
+
+setwd('..')
+source("./functions/edgington.R")
+source("./functions/augment_data.R")
+source("./functions/gene_analysis.R")
+source("./functions/geneset_analysis.R")
+source("./functions/fgsea_functions.R") # loads: create_stats, run_fgsea, sig_paths
+```
+
+# Load data
+
+```{r, warning=FALSE}
+# Change directory to parent to access the result folder
+setwd('..')
+
+# DESeq2
+GSE125856_results <- read_csv("./results/GSE125856_results.csv")|> drop_na()
+# GSE125856_results <- readRDS("./results/GSE125856_results.rds")
+GSE162653_results <- read_csv("./results/GSE162653_results.csv")|> drop_na()
+# GSE162653_results <- readRDS("./results/GSE162653_results.rds")
+GSE165932_results <- read_csv("./results/GSE165932_results.csv")|> drop_na()
+# GSE165932_results <- readRDS("./results/GSE165932_results.rds")
+
+
+# DEXeq
+# dexseq_results_GSE125856 <- readRDS("./results/dexseq_results_GSE125856.rds") |> as.data.frame() |> as_tibble() |> drop_na()
+dexseq_results_GSE162653 <- readRDS("./results/dexseq_results_GSE162653.rds") |> as.data.frame() |> as_tibble() |> drop_na()
+dexseq_results_GSE165932 <- readRDS("./results/dexseq_results_GSE165932.rds") |> as.data.frame() |> as_tibble() |> drop_na()
+fgsea_DESeq2_BP_GSE162653 <- readRDS("./results/fgsea_DESeq2_BP_GSE162653.rds")
+```
+
+# Integrate p-values of GSE162653
+
+```{r}
+# GSE162653_results |> dplyr::select(gene_id)
+```
+
+```{r}
+# augment125856 <- augment_data(GSE162653_results, dexseq_results_GSE125856)
+augment162653 <- augment_data(GSE162653_results, dexseq_results_GSE162653)
+augment165932 <- augment_data(GSE165932_results, dexseq_results_GSE165932)
+augment162653 |> head()
+```
+
+```{r}
+
+setwd("..")
+augment162653 |> write_csv("results/03_pval_integration/augment162653-01.csv")
+augment165932 |> write_csv("results/03_pval_integration/augment165932-01.csv")
+```
+
+## Gene-level analysis
+
+```{r}
+# sig_counts125856 <- gene_analysis(augment125856)
+sig_counts162653 <- gene_analysis(augment162653)
+sig_counts165932 <- gene_analysis(augment165932)
+```
+
+```{r}
+sig_counts162653 |> head()
+sig_counts165932 |> head()
+```
+
+### Uniquely significant genes
+
+```{r}
+unique165932 <- sum(augment165932$sig_joint & !augment165932$sig_deseq2 & !augment165932$sig_dexseq)
+unique165932
+```
+
+## Gene-set-level analysis
+
+```{r}
+BP_df = msigdbr(species = "human", category = "C5", subcategory = "BP")
+BP_list = split(BP_df$ensembl_gene, BP_df$gs_name)
+MF_df = msigdbr(species = "human", category = "C5", subcategory = "MF")
+MF_list = split(MF_df$ensembl_gene, MF_df$gs_name)
+```
+
+```{r}
+
+# Results for dataset GSE162653
+res162653 <- geneset_analysis(augment162653, BP_list, MF_list)
+unique_joint_162653 <- res162653$unique_joint
+fgsea_joint_162653  <- res162653$fgsea_joint
+
+# Results for dataset GSE165932
+res165932 <- geneset_analysis(augment165932, BP_list, MF_list)
+unique_joint_165932 <- res165932$unique_joint
+fgsea_joint_165932  <- res165932$fgsea_joint
+
+```
+
+Plots for Fishers integration analysis
+
+```{r}
+# 162653
+augment162653 <- augment162653 |> 
+  mutate(
+    joint_only = sig_joint & !sig_deseq2 & !sig_dexseq,
+    category = case_when(
+      joint_only ~ "Joint-only",
+      sig_deseq2 | sig_dexseq ~ "DESeq2 or DEXSeq",
+      TRUE ~ "Not significant"
+    )
+  )
+
+p1 <- ggplot(augment162653, aes(
+  x = -log10(pvalue_deseq2),
+  y = -log10(pvalue_dexseq),
+  color = category
+)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_manual(
+    values = c(
+      "Not significant" = "grey80",
+      "DESeq2 or DEXSeq" = "#1f78b4",
+      "Joint-only" = "red"
+    )
+  ) +
+  labs(
+    title = "Genes Significant Only After Fisher Integration",
+    x = "-log10(DESeq2 p-value)",
+    y = "-log10(DEXSeq p-value)",
+    color = "Gene Class"
+  ) +
+  theme_minimal(base_size = 14)
+
+ggsave("../figures/Sig_genes_fischer_162653.png", p1, width = 10, height = 7, dpi = 300)
+
+```
+
+```{r}
+# 165932
+augment165932 <- augment165932 |> 
+  mutate(
+    joint_only = sig_joint & !sig_deseq2 & !sig_dexseq,
+    category = case_when(
+      joint_only ~ "Joint-only",
+      sig_deseq2 | sig_dexseq ~ "DESeq2 or DEXSeq",
+      TRUE ~ "Not significant"
+    )
+  )
+
+p1 <- ggplot(augment165932, aes(
+  x = -log10(pvalue_deseq2),
+  y = -log10(pvalue_dexseq),
+  color = category
+)) +
+  geom_point(alpha = 0.5, size = 1) +
+  scale_color_manual(
+    values = c(
+      "Not significant" = "grey80",
+      "DESeq2 or DEXSeq" = "#1f78b4",
+      "Joint-only" = "red"
+    )
+  ) +
+  labs(
+    title = "Genes Significant Only After Fisher Integration",
+    x = "-log10(DESeq2 p-value)",
+    y = "-log10(DEXSeq p-value)",
+    color = "Gene Class"
+  ) +
+  theme_minimal(base_size = 14)
+
+ggsave("../figures/Sig_genes_fischer_165932.png", p1, width = 10, height = 7, dpi = 300)
+```
+
+The scatterplot shows that Fisher’s p-value integration identifies additional genes (red) that exhibit consistent but individually weak evidence in both DESeq2 and DEXSeq, demonstrating that multi-layer integration reveals biological signals missed by single-omics analyses.
+
+```{r}
+# 162653
+joint_pathways_df_162653 <- fgsea_joint_162653 %>%
+  filter(pathway %in% unique_joint_162653) %>%
+  mutate(
+    logpadj = -log10(padj)
+  ) %>%
+  arrange(padj)
+
+top_joint_162653 <- joint_pathways_df_162653 %>% 
+  slice_min(padj, n = 20)
+
+p162653 <- ggplot(top_joint_162653,
+       aes(x = logpadj,
+           y = reorder(pathway, logpadj),
+           size = NES,
+           color = NES)) +
+  
+  geom_point(alpha = 0.75) +
+  
+  scale_color_gradient(low = "#fca5a5", high = "#b91c1c") +
+
+  geom_vline(xintercept = -log10(0.05),
+             linetype = "dashed", color = "grey40") +
+
+  labs(
+    title = "Top Joint-only Enriched Pathways (GSE162653)",
+    x = "-log10(adjusted p-value)",
+    y = "Pathway",
+    size = "NES",
+    color = "NES"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_text(size = 9, lineheight = 1.1),
+    plot.title  = element_text(face = "bold", hjust = 0.5),
+    legend.position = "right"
+  )
+
+p162653
+
+ggsave("../figures/joint_pathways_GSE162653.png", p162653, 
+       width = 10, height = 7, dpi = 300)
+
+```
+
+```{r}
+# 165932
+joint_pathways_df_165932 <- fgsea_joint_165932 %>%
+  filter(pathway %in% unique_joint_165932) %>%
+  mutate(
+    logpadj = -log10(padj)
+  ) %>%
+  arrange(padj)
+
+top_joint_165932 <- joint_pathways_df_165932 %>% 
+  slice_min(padj, n = 20)
+
+p165932 <- ggplot(top_joint_165932,
+       aes(x = logpadj,
+           y = reorder(pathway, logpadj),
+           size = NES,
+           color = NES)) +
+  
+  geom_point(alpha = 0.75) +
+  
+  scale_color_gradient(low = "#fca5a5", high = "#b91c1c") +
+
+  geom_vline(xintercept = -log10(0.05),
+             linetype = "dashed", color = "grey40") +
+
+  labs(
+    title = "Top Joint-only Enriched Pathways (GSE165932)",
+    x = "-log10(adjusted p-value)",
+    y = "Pathway",
+    size = "NES",
+    color = "NES"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_text(size = 9, lineheight = 1.1),
+    plot.title  = element_text(face = "bold", hjust = 0.5),
+    legend.position = "right"
+  )
+
+p165932
+
+ggsave("../figures/joint_pathways_GSE165932.png", p165932, 
+       width = 12, height = 7, dpi = 300)
+
+```
+
+```{r}
+# Integrating p-values from both datasets using Edgington's method.
+integrated_datasets <- edgington(augment162653,augment165932) |> write_csv("../results/03_pval_integration/integrated_datasets.csv")
+```
+
+```{r}
+# Save significant genes
+integrated_sig <- integrated_datasets %>% filter(sig_edgington == TRUE)
+
+write_csv(integrated_sig,
+          "../results/03_pval_integration/integrated_sig01.csv")
+
+```
+
+```{r}
+integrated_gene_classes <- integrated_datasets %>%
+  mutate(
+    class = case_when(
+      sig_edgington ~ "Integrated-significant",
+      TRUE ~ "Not significant"
+    )
+  )
+table(integrated_gene_classes$class)
+```
+
+```{r}
+sig_162653 <- augment162653 %>% 
+  filter(sig_joint == TRUE) %>% 
+  pull(groupID)
+
+sig_165932 <- augment165932 %>% 
+  filter(sig_joint == TRUE) %>% 
+  pull(groupID)
+
+# Genes significant in at least one dataset before integration
+sig_before <- union(sig_162653, sig_165932)
+
+```
+
+```{r}
+sig_after <- integrated_datasets %>% 
+  filter(sig_edgington == TRUE) %>% 
+  pull(groupID)
+```
+
+```{r}
+sig_only_after <- setdiff(sig_after, sig_before)
+length(sig_only_after)
+#93
+```
+
+FGSEA
+
+```{r}
+create_stats <- function(df, pvalue_col, id_col = "gene_id") {
+s <- -log10(df[[pvalue_col]])
+names(s) <- df[[id_col]]
+# In case of duplicate gene IDs, keep the strongest evidence
+s <- tapply(s, names(s), max)
+sort(s, decreasing = TRUE)
+}
+```
+
+```{r}
+stats_int <- create_stats(integrated_datasets, "joint_pval_edgington", id_col = "groupID")
+
+```
+
+```{r}
+fg_int_BP <- fgseaMultilevel(
+  pathways = BP_list,
+  stats     = stats_int,
+  minSize   = 15,
+  maxSize   = 500,
+  scoreType = "std"
+)
+
+sig_int_BP <- fg_int_BP %>% filter(padj < 0.05)
+
+nrow(sig_int_BP)
+```
+
+```{r}
+write_csv(sig_int_BP,
+          "../results/03_pval_integration/fgsea_integrated_BP_sig.csv")
+
+```
+
+```{r}
+
+```
+
+```{r}
+sig_joint_162653 <- fgsea_joint_162653 %>% 
+  filter(padj < 0.05) %>% 
+  pull(pathway)
+
+sig_joint_165932 <- fgsea_joint_165932 %>% 
+  filter(padj < 0.05) %>% 
+  pull(pathway)
+
+# Pathways significant in each individual dataset
+paths_162 <- sig_joint_162653      # already a character vector
+paths_165 <- sig_joint_165932      # already a character vector
+
+# Pathways significant after Edgington integration
+paths_int <- sig_int_BP$pathway    # column from fgsea table
+
+# Unique pathways only after integration
+paths_edgington_only <- setdiff(paths_int, union(paths_162, paths_165))
+
+length(paths_edgington_only)
+#303
+
+
+```
+
+```{r}
+top10_edg <- sig_int_BP %>% 
+  filter(pathway %in% paths_edgington_only) %>% 
+  arrange(padj) %>% 
+  slice_head(n = 10)
+
+top10_edg
+
+```
+
+```{r}
+write_csv(top10_edg, "../results/03_pval_integration/top10_edgington_only_BP.csv")
+
+```
+
+plot
+
+```{r}
+top10_edg <- sig_int_BP %>%
+  filter(pathway %in% paths_edgington_only) %>%
+  arrange(padj) %>%
+  slice_head(n = 10) %>%
+  mutate(
+    logpadj = -log10(padj),
+  )
+top10_edg
+
+```
+
+```{r}
+library(ggplot2)
+
+p <- ggplot(top10_edg,
+            aes(x = logpadj,
+                y = reorder(pathway, logpadj),
+                size = abs(NES),
+                color = NES)) +
+  
+  geom_point(alpha = 0.8) +
+  
+  scale_color_gradient2(
+    low = "#4575b4",   # blue (down-regulated)
+    mid = "grey80",
+    high = "#d73027",  # red (up-regulated)
+    midpoint = 0
+  ) +
+  
+  labs(
+    title = "Top 10 Edgington-only BP Pathways",
+    x = "-log10(adjusted p-value)",
+    y = "Pathway",
+    size = "|NES|",
+    color = "NES"
+  ) +
+  
+  theme_minimal(base_size = 14) +
+  theme(
+    axis.text.y = element_text(size = 10),
+    plot.title = element_text(face = "bold", hjust = 0.5)
+  )
+
+p
+
+```
+
+```{r}
+ggsave("../figures/top10_edg_bubbleplot.png", p,
+       width = 10, height = 7, dpi = 300)
+
+```

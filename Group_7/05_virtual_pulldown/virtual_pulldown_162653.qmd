@@ -1,0 +1,157 @@
+---
+title: "virtual_pulldown_"
+format: html
+---
+
+```{r}
+library("tidyverse")
+library("igraph")
+library("msigdbr")
+library("fgsea")
+library("ggraph")
+
+
+df <- read.csv("../results/03_pval_integration/augment162653-01.csv")
+
+seeds <- df |> 
+  pull(groupID)
+```
+
+```{r}
+load(file='/home/projects/22140/exercise7_ppi.Rdata')
+```
+
+```{r}
+ppi_genes <- unique(c(ppi$from, ppi$to))
+
+in_ppi <- df |>
+filter(groupID %in% ppi_genes)
+```
+
+```{r}
+top100 <- in_ppi |>
+arrange(padj_joint) |>
+slice_head(n = 100) |>
+pull(groupID)
+
+seeds <- top100
+```
+
+```{r}
+g <- graph_from_data_frame(ppi, directed = FALSE)
+```
+
+```{r}
+seed_neighbors <- ego(
+graph = g,
+order = 1,
+nodes = V(g)[name %in% seeds],
+mode = "all"
+)
+sub_nodes_names <- unique(unlist(lapply(seed_neighbors, as_ids)))
+
+g_sub <- induced_subgraph(g, vids = V(g)[name %in% sub_nodes_names])
+```
+
+```{r}
+filter_virtual_pulldown <- function(subGraph, parentGraph, cutoff) {
+  # require vertex attribute "names" in both graphs
+  if (is.null(V(subGraph)$name) || is.null(V(parentGraph)$name))
+    stop("Both graphs must have vertex 'name' attributes.")
+  
+  mode <- "all"
+  
+  vn <- V(subGraph)$name
+  
+  #Calcula en degree de los nodos del subgrafo tanto en la network global como en la interna
+  deg_full     <- degree(parentGraph, v = vn, mode = mode)
+  deg_internal <- degree(subGraph,            mode = mode)
+  
+  #Crea un df de los nodos del subgrafo con ambos degrees y el ratio como features
+  res <- data.frame(
+    node          = vn,
+    deg_internal  = deg_internal,
+    deg_full      = deg_full,
+    frac_internal = ifelse(deg_full > 0, deg_internal / deg_full, NA_real_),
+    stringsAsFactors = FALSE
+  )
+  
+  #Se queda solo con los nodos que no tienen NA en el ratio y cuyo ratio es mayor al cutoff
+  nodes_to_keep <- res$node[!is.na(res$frac_internal) & res$frac_internal >= cutoff]
+  
+  #Crea un subgrafo del anterior subgrafo con estos nodos filtrados
+  filteredSubGraph <- induced_subgraph(subGraph, vids = V(subGraph)[name %in% nodes_to_keep])
+  
+  #Añade el ratio como node atribute del subgrafo en cuestion
+  V(filteredSubGraph)$frac_internal <- res$frac_internal[match(V(filteredSubGraph)$name, res$node)]
+  
+  filteredSubGraph
+}
+```
+
+```{r}
+g_filtered_0.2 <- filter_virtual_pulldown(g_sub, g, cutoff = 0.1)
+length(V(g_filtered_0.2))
+length(E(g_filtered_0.2))
+```
+
+```{r}
+V(g_filtered_0.2)$Seed <- ifelse(V(g_filtered_0.2)$name %in% seeds, "+", "-")
+
+ggraph(g_filtered_0.2, layout = "fr") +
+  geom_node_point(mapping = aes(color = Seed)) +
+  geom_edge_link(alpha = 0.05) 
+```
+
+```{r}
+clusters <- cluster_louvain(g_filtered_0.2, resolution = 0.2, weights = NULL)
+sizes(clusters)
+```
+
+```{r}
+clusters_vector <- membership(clusters)
+```
+
+```{r}
+V(g_filtered_0.2)$cluster <- factor(clusters_vector)
+
+#Plot de los clústers
+ggraph(g_filtered_0.2, layout = "fr") +
+  geom_node_point(mapping = aes(color = cluster)) +
+  geom_edge_link(alpha = 0.05)
+
+ggsave("vp_162653_clusters.png", path = "../figures/")
+```
+
+```{r}
+clus_1 <- names(clusters_vector[clusters_vector == "1"]) 
+clus_2 <- names(clusters_vector[clusters_vector == "2"]) 
+clus_3 <- names(clusters_vector[clusters_vector == "3"]) 
+```
+
+```{r}
+background <- V(g_filtered_0.2)$name
+
+BP_df <- msigdbr(species = "human", category = "C5", subcategory = "BP")
+BP_list <- split(BP_df$ensembl_gene, BP_df$gs_name)
+```
+
+```{r}
+clus1_res <- fora(BP_list, clus_1, background) |> write_csv("../results/clus1_res.csv")
+clus1_res
+```
+
+```{r}
+clus2_res <- fora(BP_list, clus_2, background) |> write_csv("../results/clus2_res.csv")
+clus2_res
+```
+
+```{r}
+clus3_res <- fora(BP_list, clus_3, background) |> write_csv("../results/clus3_res.csv")
+clus3_res
+```
+
+```{r}
+clus4_res <- fora(BP_list, clus_4, background)
+clus4_res
+```

@@ -1,0 +1,208 @@
+---
+title: "Virtual Pulldown 1"
+format: html
+editor: visual
+---
+
+## Load Libraries and database
+
+```{r}
+library(tidyverse)
+library(igraph)
+library(msigdbr)
+library(fgsea)
+library(ggraph)
+library(biomaRt)
+
+
+# Load PPI database (Lab 7)
+load("/home/projects/22140/exercise7_ppi.Rdata")
+setwd("..") 
+```
+
+```{r}
+#seeds for virtual pulldown (Taken from ppi network)
+seeds <- c(
+  "ENSG00000004059",
+  "ENSG00000149182",
+  "ENSG00000023318",
+  "ENSG00000170348",
+  "ENSG00000129083",
+  "ENSG00000095139",
+  "ENSG00000100196"
+)
+
+```
+
+```{r}
+# Build PPI Graph
+g <- graph_from_data_frame(ppi, directed = FALSE)
+
+```
+
+```{r}
+# Creating Virtual Pulldown Function
+
+filter_virtual_pulldown <- function(subGraph, parentGraph, cutoff) {
+
+if (is.null(V(subGraph)$name) || is.null(V(parentGraph)$name)) {
+stop("Both graphs require a 'name' vertex attribute.")
+}
+
+vn <- V(subGraph)$name
+
+deg_full     <- degree(parentGraph, v = vn, mode = "all")
+deg_internal <- degree(subGraph, mode = "all")
+
+res <- data.frame(
+node = vn,
+deg_internal = deg_internal,
+deg_full = deg_full,
+frac_internal = ifelse(deg_full > 0, deg_internal / deg_full, NA_real_),
+stringsAsFactors = FALSE
+)
+
+nodes_to_keep <- res$node[
+!is.na(res$frac_internal) & res$frac_internal >= cutoff
+]
+
+filtered_graph <- induced_subgraph(subGraph, vids = V(subGraph)[name %in% nodes_to_keep])
+
+V(filtered_graph)$frac_internal <-
+res$frac_internal[match(V(filtered_graph)$name, res$node)]
+
+filtered_graph
+}
+
+```
+
+```{r}
+# STEP 1: Virtual Pulldown
+
+# Check which of your 7 seeds exist in the PPI network
+valid_seeds <- intersect(seeds, V(g)$name)
+
+if (length(valid_seeds) == 0) {
+  stop("None of the seed genes are present in the PPI network `ppi`.")
+}
+
+seed_neighbors <- ego(
+  graph = g,
+  order = 1,
+  nodes = V(g)[name %in% valid_seeds],
+  mode = "all"
+)
+
+# Flatten the list of ego nodes
+sub_nodes_names <- unique(unlist(lapply(seed_neighbors, as_ids)))
+
+# Build the subgraph
+g_sub <- induced_subgraph(g, vids = V(g)[name %in% sub_nodes_names])
+
+# STEP 2: Filter virtual pulldown based on internal connectivity
+
+g_filt <- filter_virtual_pulldown(
+  subGraph = g_sub,
+  parentGraph = g,
+  cutoff = 0.5
+)
+
+```
+
+For different cutoffs, no of genes are decreasing but not drastically. The most concerning thing is one of the seed nodes is not in the cluster and has low degree. To get what is going on, I am going to use Enrichr and see for different cutoffs how does the gene enrichment changes
+
+### Getting gene names from Ensembl IDs for Enrichr (just a sanity check coz this is driving me crazy will delete later)
+
+```{r}
+# Get ENSG IDs from your filtered graph
+ens_ids <- V(g_filt)$name
+
+ens_ids <- unique(ens_ids)
+length(ens_ids)  # how many IDs to map
+
+
+# Use Ensembl Genes for human
+mart <- useEnsembl(biomart = "genes", dataset = "hsapiens_gene_ensembl")
+
+# Request mapping: ensembl_gene_id -> hgnc_symbol and external_gene_name
+attrs <- c("ensembl_gene_id", "hgnc_symbol", "external_gene_name")
+map_df <- getBM(attributes = attrs, filters = "ensembl_gene_id",
+                values = ens_ids, mart = mart)
+
+# Keep one row per ENSG (prefer hgnc_symbol then external_gene_name)
+map_df <- map_df[!duplicated(map_df$ensembl_gene_id), ]
+map_df$symbol <- ifelse(map_df$hgnc_symbol != "", map_df$hgnc_symbol, map_df$external_gene_name)
+map_df <- map_df[,c("symbol")]
+
+
+
+```
+
+```{r}
+# all the genes from virtual pulldown
+ V(g_filt)$name
+
+```
+
+```{r}
+# Highlight seed genes
+
+library(ggraph)
+library(tidygraph)
+
+g_filt_tg <- as_tbl_graph(g_filt)
+
+ggraph(g_filt_tg, layout = "fr") +
+  geom_edge_link(alpha = 0.3) +
+  geom_node_point(aes(color = name %in% seeds), size = 2) +
+  geom_node_text(
+    aes(label = ifelse(name %in% seeds, name, "")),
+    repel = TRUE,
+    size = 3
+  ) +
+  scale_color_manual(values = c("skyblue", "red")) +
+  theme_void()
+
+
+```
+
+## Network Statistics
+
+```{r}
+# Average node degree
+mean(degree(g_filt_tg))
+
+```
+
+```{r}
+# transitivity
+transitivity(g_filt_tg)
+```
+
+```{r}
+diameter(g_filt_tg)
+```
+
+```{r}
+ # clustering the results
+cl <- cluster_louvain(g_filt, weights = NULL, resolution = 0.4)
+ 
+```
+
+```{r}
+# Enrichment
+cluster_vec <- membership(cl)
+V(g_filt)$cluster <- factor(cluster_vec)
+n_clusters <- sort(table(V(g_filt)$cluster), decreasing = TRUE)
+n_clusters
+```
+
+```{r}
+clusters_df <- data.frame(
+gene_id = names(cluster_vec),
+cluster = as.integer(cluster_vec),
+stringsAsFactors = FALSE
+)
+```
+
+̥

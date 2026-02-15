@@ -1,0 +1,42 @@
+---
+title: "Loading datasets on server"
+author: "Group 7"
+format: html
+editor: visual
+---
+
+## Data Storage and sharing
+
+Create a variable on the .bashrc for these paths as well. They may come handy.
+
+```{r}
+data_path <- "/home/projects/exam_2025_22140_22150/group_7"
+```
+
+A folder is created at {r}
+
+## Loading functions and provided in the course material
+
+```{r}
+# Loads extractGeneCountMatrixFromIsoCounts()
+# and loadIsoformCountMatrix()
+load(file='/home/projects/22140/exam_data/exam_functions.Rdata')
+```
+
+Load isoform data:
+
+```{r}
+isoInfo <- read_rds(
+  paste0(
+    '/home/projects/22140/exam_data/',
+    'Homo_sapiens.GRCh38.107.chr_patch_hapl_scaff_tx_info.Rds'
+  )
+)
+
+isoInfo
+```
+
+```{r}
+isoInfo |> loadIsoformCountMatrix()
+```
+

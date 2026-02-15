@@ -1,0 +1,52 @@
+---
+title: "protein network"
+author: "group_7"
+format: html
+editor: visual
+---
+
+```{r}
+library(tidyverse)
+# library(biomaRt)
+library(dplyr)
+library(httr)
+library(jsonlite)
+library(dplyr)
+library(igraph)
+library(ggraph)
+
+load(file='/home/projects/22140/exercise7_ppi.Rdata')
+setwd("..")
+augment162653 <- read_csv("results/03_pval_integration/augment162653-01.csv")
+augment165932 <- read_csv("results/03_pval_integration/augment165932-01.csv")
+```
+
+```{r}
+part1 <- augment162653 |> dplyr::select(groupID) |> distinct()
+part2 <- augment165932 |> dplyr::select(groupID) |> distinct()
+gene_list <- bind_rows(part1, part2) |> distinct()
+```
+
+
+
+```{r}
+ppi |> head()
+```
+
+```{r}
+g <- graph_from_data_frame(
+  ppi,
+  directed = FALSE
+)
+```
+
+```{r}
+ggraph(g, layout = "fr") +
+  geom_edge_link(alpha = 0.3) +
+  geom_node_point(size = 6, color = "steelblue") +
+  # geom_node_text(aes(label = name), repel = TRUE, size = 4) +
+  scale_edge_width(range = c(0.3, 2)) +
+  theme_void() +
+  ggtitle("Interactome STRING (API REST)")
+```
+
